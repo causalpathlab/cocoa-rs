@@ -9,7 +9,7 @@ description = "Counterfactual Confounder Adjustment for Differential Analysis"
 repository = "https://github.com/causalpathlab/cocoa-rs"
 homepage = "https://github.com/causalpathlab/cocoa-rs"
 readme = "README.md"
-keywords = ["genomics", "single-cell", "differential-expression", "causal"]
+keywords = ["genomics", "single-cell", "diffexp", "causal"]
 categories = ["science", "command-line-utilities"]
 exclude = [
     "**/.claude/**",
