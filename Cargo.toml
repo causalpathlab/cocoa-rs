@@ -1,0 +1,57 @@
+[package]
+name = "cocoa-rs"
+version = "0.3.1"
+edition = "2021"
+rust-version = "1.91"
+license = "MIT"
+authors = ["Yongjin Park <ypp@stat.ubc.ca> <yongjin.park@ubc.ca>"]
+description = "Counterfactual Confounder Adjustment for Differential Analysis"
+repository = "https://github.com/causalpathlab/cocoa-rs"
+homepage = "https://github.com/causalpathlab/cocoa-rs"
+readme = "README.md"
+keywords = ["genomics", "single-cell", "differential-expression", "causal"]
+categories = ["science", "command-line-utilities"]
+exclude = [
+    "**/.claude/**",
+    "**/.DS_Store",
+]
+
+[[bin]]
+name = "cocoa"
+path = "src/main.rs"
+
+[features]
+default = []
+cuda = [
+    "data-beans/cuda",
+    "legume-numeric/cuda",
+]
+metal = [
+    "data-beans/metal",
+    "legume-numeric/metal",
+]
+hdf5 = ["data-beans/hdf5"]
+
+[dependencies]
+data-beans = { version = "0.6.12", features = ["aux", "alg", "sim"] }
+legume-numeric = { version = "0.8.10", features = ["matrix", "param", "candle", "mcmc"] }
+
+anyhow = "1.0"
+clap = { version = "4.5.20", features = ["derive"] }
+flate2 = "1.0.34"
+num_cpus = "1.16.0"
+rayon = "1.10.0"
+tempfile = "3.2"
+rand = "0.10.1"
+ndarray = { version = "0.17", features = ["rayon", "serde", "approx", "blas"] }
+ndarray-rand = "0.16"
+rand_distr = "0.6"
+nalgebra = "0.34"
+nalgebra-sparse = "0.11"
+approx = "0.5.1"
+
+special = "0.13"
+indicatif = { version = "^0.18", features = ["rayon"] }
+log = "0.4"
+env_logger = "0.11"
+rustc-hash = "2.1"
