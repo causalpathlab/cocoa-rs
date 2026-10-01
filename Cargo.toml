@@ -1,6 +1,6 @@
 [package]
 name = "cocoa-rs"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -23,17 +23,15 @@ path = "src/main.rs"
 [features]
 default = []
 cuda = [
-    "data-beans/cuda",
     "legume-numeric/cuda",
 ]
 metal = [
-    "data-beans/metal",
     "legume-numeric/metal",
 ]
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.6.20", default-features = false, features = ["aux", "alg", "sim"] }
+data-beans = { version = "0.6.21", default-features = false, features = ["aux", "alg", "sim"] }
 legume-numeric = { version = "0.8.14", default-features = false, features = ["matrix", "param"] }
 
 anyhow = "1.0"
