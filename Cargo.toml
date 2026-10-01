@@ -1,6 +1,6 @@
 [package]
 name = "cocoa-rs"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -33,8 +33,8 @@ metal = [
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.6.19", default-features = false, features = ["aux", "alg", "sim"] }
-legume-numeric = { version = "0.8.13", default-features = false, features = ["matrix", "param"] }
+data-beans = { version = "0.6.20", default-features = false, features = ["aux", "alg", "sim"] }
+legume-numeric = { version = "0.8.14", default-features = false, features = ["matrix", "param"] }
 
 anyhow = "1.0"
 clap = { version = "4.5.20", features = ["derive"] }
@@ -43,8 +43,6 @@ num_cpus = "1.16.0"
 rayon = "1.10.0"
 tempfile = "3.2"
 rand = "0.10.1"
-ndarray = { version = "0.17", features = ["rayon", "serde", "approx", "blas"] }
-ndarray-rand = "0.16"
 rand_distr = "0.6"
 nalgebra = "0.34"
 nalgebra-sparse = "0.11"
