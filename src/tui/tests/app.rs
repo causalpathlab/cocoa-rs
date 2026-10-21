@@ -68,7 +68,7 @@ fn a_run_there_moves_the_next_one_on_and_a_typed_one_is_refused() {
     let mut app = simulate_app(tmp.path());
     assert_eq!(
         app.planned.as_ref().unwrap()[0].out,
-        tmp.path().join("sim/collider2")
+        tmp.path().join("sim/collider-2")
     );
     app.sim_out = "sim/collider".into();
     app.replan();
@@ -141,7 +141,7 @@ fn diff_on_a_simulation_takes_its_outputs_and_truth_as_inputs() {
     assert!(app.inputs.truth().is_some());
     // The diff there already: the next free prefix.
     let jobs = app.planned.as_ref().unwrap();
-    assert_eq!(jobs[0].out, tmp.path().join("collider-diff2"));
+    assert_eq!(jobs[0].out, tmp.path().join("collider-diff-2"));
 
     app.open_results(&tmp.path().join("collider-diff"), None);
     read_in(&mut app);
@@ -256,4 +256,24 @@ fn results_are_read_off_the_screen_and_taken_in_as_they_come() {
     assert!(screen(&mut app, 100, 20).contains("reading"));
     read_in(&mut app);
     assert!(app.results.as_ref().is_some_and(|r| r.prefix == diff));
+}
+
+#[test]
+fn a_diff_of_a_simulation_finds_its_truth_under_either_numbering() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("collider.causal.gz"), b"").unwrap();
+    let truth = Some(tmp.path().join("collider.causal.gz"));
+    // `-diff-2` is how runs number now; `-diff2`, how cocoa 0.6.0's view
+    // numbered them, which projects still hold.
+    for name in [
+        "collider-diff",
+        "collider-diff-2",
+        "collider-diff2",
+        "collider-diff-12",
+    ] {
+        assert_eq!(guess_truth(&tmp.path().join(name)), truth, "{name}");
+    }
+    for name in ["collider-fit", "collider-diff-"] {
+        assert_eq!(guess_truth(&tmp.path().join(name)), None, "{name}");
+    }
 }

@@ -231,7 +231,7 @@ fn run(a: RunArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
         None => cx.free_prefix(
             &a.command,
             |out| plan(&app, &argv, out),
-            |out| !tables(out).is_empty(),
+            crate::runs::has_tables,
         )?,
     };
 
