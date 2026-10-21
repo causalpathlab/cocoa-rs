@@ -722,7 +722,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cocoa-rs"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "approx",
@@ -2626,9 +2626,9 @@ dependencies = [
 
 [[package]]
 name = "legume-mcp"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c5403201a71d313f4c2c8ca62fbce1c958680b2faf209745a558acf8b8f484c"
+checksum = "2effeea104b1181314f16b043120db84efad2496fa188e22e35b1e1a0746e70b"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

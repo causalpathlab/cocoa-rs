@@ -101,25 +101,38 @@ pub fn suffixed(p: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// The first `{stem}`, `{stem}2`, `{stem}3`, ... under `dir` that no run
-/// of `argv` has written: its outputs as `plan` lists them, and its tables.
-/// With no plan (the command line refused), `{stem}` itself.
-pub fn free_prefix(app: &clap::Command, argv: &[String], dir: &Path, stem: &str) -> String {
-    let at = |n: usize| {
-        let name = if n == 1 {
-            stem.to_string()
-        } else {
-            format!("{stem}{n}")
-        };
-        dir.join(name).to_string_lossy().into_owned()
-    };
-    (1..10_000)
-        .map(at)
-        .find(|out| match plan(app, argv, out) {
-            Ok(outputs) => taken(Path::new(out), &outputs).is_none(),
-            Err(_) => tables(out).is_empty(),
+/// The first `{stem}`, `{stem}-2`, `{stem}-3`, ... under `dir` that no run
+/// of `argv` has written (its outputs as `plan` lists them, and its
+/// tables), numbered as the agent's runs are, with those outputs; or why
+/// there is none (the command line refused, every name taken).
+pub fn free_prefix(
+    app: &clap::Command,
+    argv: &[String],
+    dir: &Path,
+    stem: &str,
+) -> anyhow::Result<(String, Vec<PathBuf>)> {
+    // The folder read once: a name is taken when a run's tables are there.
+    let held: std::collections::HashSet<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.ok()?.file_name().to_string_lossy().into_owned();
+            let (run, _table) = name.strip_suffix(".parquet")?.rsplit_once('.')?;
+            Some(dir.join(run).to_string_lossy().into_owned())
         })
-        .unwrap_or_else(|| at(1))
+        .collect();
+    legume_mcp::free_prefix(
+        dir,
+        stem,
+        |out| plan(app, argv, out),
+        |out| held.contains(out),
+    )
+}
+
+/// Whether a run's tables are under `prefix`: its name is taken, whatever
+/// another run there would write.
+pub fn has_tables(prefix: &str) -> bool {
+    !tables(prefix).is_empty()
 }
 
 #[cfg(test)]

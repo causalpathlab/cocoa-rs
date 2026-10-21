@@ -415,19 +415,22 @@ impl App {
         stem: &str,
     ) -> Result<Job, String> {
         let whole = argv(None);
-        let out = if typed.trim().is_empty() {
-            PathBuf::from(runs::free_prefix(&self.cli, &whole, dir, stem))
+        let (out, outputs) = if typed.trim().is_empty() {
+            runs::free_prefix(&self.cli, &whole, dir, stem)
+                .map(|(out, outputs)| (PathBuf::from(out), outputs))
+                .map_err(|e| e.to_string())?
         } else {
-            self.typed_out(typed)
+            let out = self.typed_out(typed);
+            let out_s = out.to_string_lossy().into_owned();
+            let outputs = runs::plan(&self.cli, &whole, &out_s).map_err(|e| e.to_string())?;
+            if let Some(found) = runs::taken(&out, &outputs) {
+                return Err(format!(
+                    "{} exists: a run is never written over; name another output",
+                    legume_tui::browse::tilde(&found)
+                ));
+            }
+            (out, outputs)
         };
-        let out_s = out.to_string_lossy().into_owned();
-        let outputs = runs::plan(&self.cli, &whole, &out_s).map_err(|e| e.to_string())?;
-        if let Some(found) = runs::taken(&out, &outputs) {
-            return Err(format!(
-                "{} exists: a run is never written over; name another output",
-                legume_tui::browse::tilde(&found)
-            ));
-        }
         let dir = out
             .parent()
             .map_or_else(|| self.here.clone(), Path::to_path_buf);
@@ -757,12 +760,16 @@ fn data_stem(p: &Path) -> String {
 }
 
 /// A simulation's truth beside a diff's inputs, when the diff's prefix is
-/// `{sim}-diff` (or the next free `{sim}-diff2`): `{sim}.causal.gz`.
+/// `{sim}-diff` (or a later one, `{sim}-diff-2`; cocoa 0.6.0 numbered them
+/// `{sim}-diff2`, which still reads): `{sim}.causal.gz`.
 fn guess_truth(prefix: &Path) -> Option<PathBuf> {
     let name = prefix.file_name()?.to_string_lossy();
-    let sim = name
-        .trim_end_matches(|c: char| c.is_ascii_digit())
-        .strip_suffix("-diff")?;
+    let unnumbered = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    let numbered = unnumbered.len() < name.len();
+    let sim = unnumbered
+        .strip_suffix("-diff-")
+        .filter(|_| numbered)
+        .or_else(|| unnumbered.strip_suffix("-diff"))?;
     let t = prefix.with_file_name(format!("{sim}.causal.gz"));
     t.is_file().then_some(t)
 }

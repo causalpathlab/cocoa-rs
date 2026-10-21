@@ -1,6 +1,6 @@
 [package]
 name = "cocoa-rs"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -54,7 +54,7 @@ rustc-hash = "2.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # The MCP server under `cocoa mcp`, and following it from the views.
-legume-mcp = { version = "0.4", features = ["clap", "tui", "sessions"] }
+legume-mcp = { version = "0.4.4", features = ["clap", "tui", "sessions"] }
 # The views of `cocoa simulate` and `cocoa diff`: detachable sessions, the
 # children they run, the flags' form, the file browser, and the heatmap and
 # its PDF.
