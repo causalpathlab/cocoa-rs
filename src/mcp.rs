@@ -18,6 +18,7 @@ use legume_mcp::{Call, Content, Handler, ServerInfo, ToolSpec};
 use legume_numeric::matrix::table::TableReader;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 const INSTRUCTIONS: &str = "\
@@ -53,19 +54,27 @@ const DOCS: &[(&str, &str)] = &[
 const TOP: usize = 20;
 
 pub fn serve() -> anyhow::Result<()> {
-    // The project's folder, so the paths an agent gives are read from the
-    // project, as the records are.
-    let root = std::env::var_os(legume_mcp::project::ROOT_ENV).filter(|r| !r.is_empty());
-    if let Some(root) = root {
-        std::env::set_current_dir(&root)
-            .with_context(|| format!("project {}", Path::new(&root).display()))?;
-    }
+    use legume_mcp::project::{OFF_ENV, ROOT_ENV};
+    // The project's folder, absolute, given to the server as it is: the
+    // paths an agent gives are read from it, as the records are kept in it.
+    let root = std::env::var_os(ROOT_ENV).filter(|r| !r.is_empty());
+    let root = match root {
+        Some(root) => std::path::absolute(&root)?,
+        None => std::env::current_dir()?,
+    };
+    std::env::set_current_dir(&root).with_context(|| format!("project {}", root.display()))?;
+    let records_off = std::env::var(OFF_ENV).is_ok_and(|v| v.eq_ignore_ascii_case("off"));
+    let options = legume_mcp::Options {
+        project: (!records_off).then_some(root),
+        watch: legume_mcp::watch::base(),
+    };
     let info = ServerInfo {
         name: "cocoa".into(),
         version: env!("CARGO_PKG_VERSION").into(),
         instructions: Some(INSTRUCTIONS.into()),
     };
-    legume_mcp::serve(info, Cocoa)
+    let stdin = std::io::BufReader::new(std::io::stdin());
+    legume_mcp::serve_with(stdin, std::io::stdout(), info, options, Cocoa)
 }
 
 struct Cocoa;
@@ -126,7 +135,7 @@ fn tools() -> Vec<ToolSpec> {
                     "sort": { "type": "string", "description": "Column to sort by" },
                     "order": { "type": "string", "enum": ["asc", "desc", "abs"], "description": "asc for p-values and q-values, abs (largest magnitude first) otherwise" },
                     "top": { "type": "integer", "description": "Rows returned (20)" },
-                    "genes": { "type": "array", "items": { "type": "string" }, "description": "Only these rows, by their first column" },
+                    "genes": { "type": "array", "items": { "type": "string" }, "description": "Only these rows, by name (the first text column, a gene)" },
                 }),
                 &["prefix"],
             ),
@@ -276,10 +285,9 @@ fn command_line(sub: &clap::Command, a: &RunArgs) -> anyhow::Result<Vec<String>>
         let key = key.trim_start_matches('-');
         let arg = flags(sub)
             .find(|f| {
-                !f.is_positional()
-                    && (f.get_long() == Some(key)
-                        || f.get_id().as_str() == key.replace('-', "_")
-                        || f.get_short().is_some_and(|s| key == s.to_string()))
+                f.get_long() == Some(key)
+                    || f.get_id().as_str() == key.replace('-', "_")
+                    || f.get_short().is_some_and(|s| key == s.to_string())
             })
             .ok_or_else(|| {
                 anyhow::anyhow!(
@@ -287,6 +295,10 @@ fn command_line(sub: &clap::Command, a: &RunArgs) -> anyhow::Result<Vec<String>>
                     a.command
                 )
             })?;
+        anyhow::ensure!(
+            !arg.is_positional(),
+            "give the data files in `data`, not as a flag"
+        );
         anyhow::ensure!(
             arg.get_id() != "output",
             "give the output prefix as out, not as a flag"
@@ -428,7 +440,7 @@ struct ReadArgs {
     sort: Option<String>,
     order: Option<Order>,
     top: Option<usize>,
-    genes: Option<Vec<String>>,
+    genes: Option<Vec<Value>>,
 }
 
 /// The run's tables under `prefix`: name and file, by name. A name with a
@@ -456,12 +468,61 @@ fn tables(prefix: &str) -> Vec<(String, PathBuf)> {
     found
 }
 
-/// A cell as JSON: a number where it reads as one (NaN as null).
+/// A parquet table's footer: its columns, which of them are text (names,
+/// flags; a nested column is shown as text too), and its row count.
+struct Footer {
+    columns: Vec<String>,
+    text: Vec<bool>,
+    n_rows: usize,
+}
+
+fn footer(file: &Path) -> anyhow::Result<Footer> {
+    use parquet::basic::{ConvertedType, Type};
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+    let shown = file.display();
+    let f = std::fs::File::open(file).with_context(|| format!("opening {shown}"))?;
+    let reader = SerializedFileReader::new(f).with_context(|| format!("reading {shown}"))?;
+    let meta = reader.metadata().file_metadata();
+    let fields = meta.schema().get_fields();
+    let text = fields
+        .iter()
+        .map(|f| {
+            !f.is_primitive()
+                || (matches!(
+                    f.get_physical_type(),
+                    Type::BYTE_ARRAY | Type::FIXED_LEN_BYTE_ARRAY
+                ) && f.get_basic_info().converted_type() != ConvertedType::DECIMAL)
+        })
+        .collect();
+    Ok(Footer {
+        columns: fields.iter().map(|f| f.name().to_string()).collect(),
+        text,
+        n_rows: usize::try_from(meta.num_rows()).with_context(|| format!("{shown}: row count"))?,
+    })
+}
+
+/// The `genes` asked for, as names: text, or whole numbers (`4` and `4.0`
+/// both name gene `4`).
+fn gene_names(genes: &[Value]) -> anyhow::Result<Vec<String>> {
+    genes
+        .iter()
+        .map(|g| match g {
+            Value::String(g) => Ok(g.clone()),
+            Value::Number(n) if n.is_i64() || n.is_u64() => Ok(n.to_string()),
+            Value::Number(n) => match n.as_f64() {
+                Some(x) if x.fract() == 0.0 && x.abs() < 2f64.powi(53) => Ok(format!("{x:.0}")),
+                _ => anyhow::bail!("genes: {n} is not a gene name"),
+            },
+            g => anyhow::bail!("genes: {g} is not a gene name"),
+        })
+        .collect()
+}
+
+/// A numeric cell as JSON (NaN, missing and unreadable as null).
 fn cell(s: &str) -> Value {
     match s.parse::<f64>() {
         Ok(x) if x.is_finite() => json!(x),
-        Ok(_) => Value::Null,
-        Err(_) => json!(s),
+        _ => Value::Null,
     }
 }
 
@@ -474,9 +535,8 @@ fn list_tables(prefix: &str, found: &[(String, PathBuf)]) -> anyhow::Result<Vec<
     let listed = found
         .iter()
         .map(|(t, f)| {
-            let reader = TableReader::open(&f.to_string_lossy())?;
-            let n_rows = reader.rows(&[0])?.count();
-            Ok(json!({ "table": t, "file": shown_path(f), "columns": reader.header(), "n_rows": n_rows }))
+            let footer = footer(f)?;
+            Ok(json!({ "table": t, "file": shown_path(f), "columns": footer.columns, "n_rows": footer.n_rows }))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(vec![Content::Json(
@@ -493,6 +553,11 @@ fn read(a: ReadArgs) -> anyhow::Result<Vec<Content>> {
         top,
         genes,
     } = a;
+    let genes: Option<HashSet<String>> = genes
+        .as_deref()
+        .map(gene_names)
+        .transpose()?
+        .map(|g| g.into_iter().collect());
     let file = if prefix.ends_with(".parquet") && Path::new(&prefix).is_file() {
         PathBuf::from(&prefix)
     } else {
@@ -513,16 +578,22 @@ fn read(a: ReadArgs) -> anyhow::Result<Vec<Content>> {
 
     let reader = TableReader::open(&file.to_string_lossy())?;
     let header = reader.header();
+    let footer = footer(&file)?;
+    // rows are named by the first text column (a gene)
+    let name = match footer.text.iter().position(|&t| t) {
+        Some(j) => j,
+        None if genes.is_some() => {
+            anyhow::bail!("{}: no name column to pick genes by", file.display())
+        }
+        None => 0,
+    };
     let all: Vec<usize> = (0..header.len()).collect();
-    let mut n_rows = 0;
     let mut rows = Vec::new();
     for row in reader.rows(&all)? {
         let row = row?;
-        n_rows += 1;
-        let wanted = genes.as_ref().is_none_or(|genes| {
-            row.first()
-                .is_some_and(|g| genes.iter().any(|x| x == g.as_ref()))
-        });
+        let wanted = genes
+            .as_ref()
+            .is_none_or(|genes| genes.contains(row[name].as_ref()));
         if wanted {
             rows.push(row);
         }
@@ -560,7 +631,11 @@ fn read(a: ReadArgs) -> anyhow::Result<Vec<Content>> {
             let obj: Map<String, Value> = header
                 .iter()
                 .zip(r.iter())
-                .map(|(h, v)| (h.to_string(), cell(v)))
+                .zip(&footer.text)
+                .map(|((h, v), &is_text)| {
+                    let v = if is_text { json!(v) } else { cell(v) };
+                    (h.to_string(), v)
+                })
                 .collect();
             Value::Object(obj)
         })
@@ -569,7 +644,7 @@ fn read(a: ReadArgs) -> anyhow::Result<Vec<Content>> {
         "file": shown_path(&file),
         "table": table,
         "columns": header,
-        "n_rows": n_rows,
+        "n_rows": footer.n_rows,
         "sorted_by": sort.map(|j| &header[j]),
         "rows": rows,
     }))])
