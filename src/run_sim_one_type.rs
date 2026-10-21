@@ -8,6 +8,7 @@ use clap::Parser;
 use indicatif::ParallelProgressIterator;
 use legume_numeric::matrix::common_io::{mkdir_parent, write_lines, write_types};
 use legume_numeric::matrix::mtx_io;
+use legume_numeric::matrix::progress::new_progress_bar;
 use legume_numeric::matrix::traits::{IoOps, MatOps, SampleOps};
 use log::info;
 use rand::SeedableRng;
@@ -267,7 +268,7 @@ impl GlmSimulator {
         #[allow(clippy::type_complexity)]
         let mut indv_ncells_triplets = num_cells
             .into_par_iter()
-            .progress_count(n_indv as u64)
+            .progress_with(new_progress_bar(n_indv as u64).with_message("individuals"))
             .enumerate()
             .filter_map(
                 |(indv, nn)| -> Option<(usize, usize, Vec<(u64, u64, f32)>)> {
@@ -496,12 +497,22 @@ pub struct SimOneTypeArgs {
 impl SimOneTypeArgs {
     /// The files a run always writes: the counts and the files beside them.
     pub fn output_files(&self) -> anyhow::Result<Vec<String>> {
-        sim_output_files(
-            &self.output,
-            self.zip,
-            &self.backend,
-            &["samples.gz", "exposures.gz", "causal.gz"],
-        )
+        let mut beside = vec![
+            "samples.gz",
+            "exposures.gz",
+            "causal.gz",
+            "data.tsv.gz",
+            "conf.tsv.gz",
+            "planted_exposure.tsv.gz",
+            "planted_confounding.tsv.gz",
+        ];
+        if self.indv_dispersion_trend.is_some() {
+            beside.push("dispersion.tsv.gz");
+        }
+        if self.save_mtx {
+            beside.extend(["mtx.gz", "rows.gz", "cols.gz"]);
+        }
+        sim_output_files(&self.output, self.zip, &self.backend, &beside)
     }
 }
 

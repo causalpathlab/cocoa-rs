@@ -12,8 +12,10 @@ use crate::stat::propensity_effect::{
 };
 use clap::Parser;
 use data_beans::utilities::name_matching::GeneIndex;
+use indicatif::ParallelProgressIterator;
 use legume_numeric::matrix::common_io::{mkdir_parent, read_name_list};
 use legume_numeric::matrix::parquet::{write_named_table, Column};
+use legume_numeric::matrix::progress::new_progress_bar;
 use legume_numeric::matrix::traits::{IoOps, MatOps};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -161,6 +163,7 @@ pub struct DiffArgs {
     #[arg(
         long,
         value_delimiter = ',',
+        value_hint = clap::ValueHint::FilePath,
         help = "Separate SC data files (.zarr/.h5) for confounder adjustment",
         long_help = "Provide separate single-cell data, such as scRNA-seq.\n\
                      Its projection defines the cell-state pseudobulks.\n\
@@ -628,13 +631,19 @@ pub fn run_cocoa_diff(args: DiffArgs) -> anyhow::Result<()> {
         level_names,
         &format!("{}.effect.parquet", args.output),
     )?;
+    let counts: Vec<(&Mat, &Mat)> = parameters
+        .iter()
+        .enumerate()
+        .map(|(k, p)| (cocoa_stat.indv_y1_stat(k), &p.indv_offset))
+        .collect();
     write_deltas(
         &effects,
+        &counts,
         &gene_names,
         &topic_names,
-        &indv_names,
-        &indv_exposure_names,
+        (&indv_names, &indv_exposure_names),
         &format!("{}.delta.parquet", args.output),
+        DELTA_GROUP_ROWS,
     )?;
 
     {
@@ -668,11 +677,13 @@ pub fn run_cocoa_diff(args: DiffArgs) -> anyhow::Result<()> {
         // Stage 1 (sums and baseline) does not depend on the labels, so every
         // draw reuses it; only stage 2 sees the new labels.
         let n_perm = args.n_permutations;
+        info!("Permutation test: {n_perm} draws...");
+        let bar = new_progress_bar(n_perm as u64).with_message("permutations");
 
         let perm_contrasts: Vec<Mat> = permuted_exposures
             .into_par_iter()
-            .enumerate()
-            .map(|(p, perm_exposure)| -> anyhow::Result<Mat> {
+            .progress_with(bar)
+            .map(|perm_exposure| -> anyhow::Result<Mat> {
                 // draws already run in parallel
                 let contrast = mask.mean_log_effect(
                     log_effects(
@@ -685,7 +696,6 @@ pub fn run_cocoa_diff(args: DiffArgs) -> anyhow::Result<()> {
                     )
                     .iter(),
                 );
-                info!("Permutation {}/{}", p + 1, n_perm);
                 Ok(contrast)
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -866,40 +876,109 @@ fn write_permutation_tests(
     write_named_table(file, "gene", gene_names, &columns)
 }
 
-/// delta per (gene, individual, topic), for the individuals in the contrast.
-fn write_deltas(
+/// Rows a delta row group holds, about: whole genes, so a reader after a
+/// few genes reads a few groups.
+const DELTA_GROUP_ROWS: usize = 1 << 18;
+
+/// delta per (gene, individual, topic), for the individuals in the contrast,
+/// with the individual's count there and the count stage 1 expects at its
+/// cell states (`counts`, per topic: y and m, gene × individual). The genes
+/// go in name order, whole genes about `group_rows` rows a row group, so
+/// the gene column's statistics say which groups hold a gene. Written a
+/// group at a time.
+pub(crate) fn write_deltas(
     effects: &[ExposureEffect],
+    counts: &[(&Mat, &Mat)],
     gene_names: &[Box<str>],
     topic_names: &[Box<str>],
-    indv_names: &[Box<str>],
-    indv_exposure_names: &[Box<str>],
+    (indv_names, indv_exposure_names): (&[Box<str>], &[Box<str>]),
     file: &str,
+    group_rows: usize,
 ) -> anyhow::Result<()> {
-    let mut genes = Vec::new();
-    let (mut indv, mut indv_exp, mut topics, mut delta) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    for (e, topic) in effects.iter().zip(topic_names) {
-        for i in (0..indv_names.len()).filter(|&i| e.used[i]) {
-            for (d, gene) in gene_names.iter().enumerate() {
-                genes.push(gene.clone());
-                indv.push(indv_names[i].clone());
-                indv_exp.push(indv_exposure_names[i].clone());
-                topics.push(topic.clone());
-                delta.push(e.delta[(d, i)]);
+    use legume_numeric::matrix::parquet::{
+        parquet_add_bytearray, parquet_add_numeric_column, ParquetWriter,
+    };
+    use parquet::basic::Type as ParquetType;
+    use parquet::data_type::ByteArray;
+    let names: Vec<Box<str>> = [
+        "individual",
+        "individual_exposure",
+        "topic",
+        "delta",
+        "count",
+        "expected",
+    ]
+    .map(Into::into)
+    .to_vec();
+    let types = [
+        [ParquetType::BYTE_ARRAY; 3].as_slice(),
+        &[ParquetType::FLOAT; 3],
+    ]
+    .concat();
+    let writer = ParquetWriter::new(
+        file,
+        (0, names.len()),
+        (None, Some(&names)),
+        Some(&types),
+        Some("gene"),
+    )?;
+    let mut fw = writer.get_writer()?;
+    // Each topic's individuals in the contrast: a gene's rows.
+    let used: Vec<Vec<usize>> = effects
+        .iter()
+        .map(|e| (0..indv_names.len()).filter(|&i| e.used[i]).collect())
+        .collect();
+    let per_gene = used.iter().map(Vec::len).sum::<usize>().max(1);
+    // Each name's bytes once: a row holds a shared handle on them.
+    let bytes = |names: &[Box<str>]| -> Vec<ByteArray> {
+        names.iter().map(|n| ByteArray::from(n.as_ref())).collect()
+    };
+    let (indv_b, exp_b, topic_b) = (
+        bytes(indv_names),
+        bytes(indv_exposure_names),
+        bytes(topic_names),
+    );
+    let mut order: Vec<usize> = (0..gene_names.len()).collect();
+    order.sort_by(|&a, &b| gene_names[a].cmp(&gene_names[b]));
+    for block in order.chunks((group_rows / per_gene).max(1)) {
+        let n = block.len() * per_gene;
+        let mut genes = Vec::with_capacity(n);
+        let (mut indv, mut indv_exp, mut topics) = (
+            Vec::with_capacity(n),
+            Vec::with_capacity(n),
+            Vec::with_capacity(n),
+        );
+        let (mut delta, mut count, mut expected) = (
+            Vec::with_capacity(n),
+            Vec::with_capacity(n),
+            Vec::with_capacity(n),
+        );
+        for &d in block {
+            let gene = ByteArray::from(gene_names[d].as_ref());
+            for (k, (e, topic)) in effects.iter().zip(&topic_b).enumerate() {
+                let (y, m) = counts[k];
+                for &i in &used[k] {
+                    genes.push(gene.clone());
+                    indv.push(indv_b[i].clone());
+                    indv_exp.push(exp_b[i].clone());
+                    topics.push(topic.clone());
+                    delta.push(e.delta[(d, i)]);
+                    count.push(y[(d, i)]);
+                    expected.push(m[(d, i)]);
+                }
             }
         }
+        let mut rg = fw.next_row_group()?;
+        for c in [&genes, &indv, &indv_exp, &topics] {
+            parquet_add_bytearray(&mut rg, c)?;
+        }
+        for c in [&delta, &count, &expected] {
+            parquet_add_numeric_column(&mut rg, c)?;
+        }
+        rg.close()?;
     }
-    write_named_table(
-        file,
-        "gene",
-        &genes,
-        &[
-            ("individual".into(), Column::Str(&indv)),
-            ("individual_exposure".into(), Column::Str(&indv_exp)),
-            ("topic".into(), Column::Str(&topics)),
-            ("delta".into(), Column::F32(&delta)),
-        ],
-    )
+    fw.close()?;
+    Ok(())
 }
 
 /// Rows of the genes listed in `file` (one name per line).

@@ -27,6 +27,10 @@ fn calls_from(cwd: &Path, project: &Path, calls: &[(&str, Value)]) -> Vec<Value>
         .current_dir(cwd)
         .env("LEGUME_MCP_PROJECT", project)
         .env("LEGUME_MCP_WATCH", "off")
+        // A background diff hosts a session: here, not among the user's,
+        // and not refused as it would be under a multiplexer.
+        .env("LEGUME_TUI_DIR", project.join("sessions"))
+        .env_remove("TMUX")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -136,8 +140,22 @@ fn runs_diff_reads_it_back_and_never_writes_over_it() {
                 "cocoa_read",
                 json!({ "prefix": out, "table": "contrast", "genes": ["GENE2"] }),
             ),
+            ("cocoa_read", json!({ "prefix": "fit" })),
+            (
+                "cocoa_read",
+                json!({ "prefix": "fit", "table": "contrast", "top": 1 }),
+            ),
         ],
     );
+    // A read names its run whole, as a run does: whoever follows the
+    // agent opens it from anywhere.
+    for read in [&r[6], &r[7]] {
+        let named = ok(read)["out"].as_str().unwrap().to_string();
+        assert!(
+            Path::new(&named).is_absolute() && named.ends_with("/fit"),
+            "{named}"
+        );
+    }
     let run = ok(&r[0]);
     for table in ["effect", "delta", "contrast", "stage1"] {
         let f = format!("{out}.{table}.parquet");
@@ -222,6 +240,62 @@ fn refuses_what_cocoa_would_refuse_before_running() {
         .file_name()
         .to_string_lossy()
         .starts_with("bad.")));
+}
+
+#[test]
+fn a_table_read_as_a_file_names_its_run_by_the_file_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let fx = fixture();
+    let out = dir.path().join("v1.2").join("fit");
+    let out = out.to_string_lossy().into_owned();
+    ok(&calls(dir.path(), &[("cocoa_run", diff_args(&fx, &out))])[0]);
+    let table = dir.path().join("v1.2").join("table.parquet");
+    std::fs::copy(format!("{out}.contrast.parquet"), &table).unwrap();
+    let read = json!({ "prefix": table, "top": 1 });
+    let r = calls(dir.path(), &[("cocoa_read", read)]);
+    let named = ok(&r[0])["out"].as_str().unwrap().to_string();
+    assert!(named.ends_with("/v1.2/table"), "{named}");
+}
+
+#[test]
+fn a_background_diff_runs_in_a_session_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let fx = fixture();
+    let out = dir.path().join("fit").to_string_lossy().into_owned();
+    let mut diff = diff_args(&fx, &out);
+    diff["background"] = true.into();
+    let r = calls(
+        dir.path(),
+        &[
+            ("cocoa_run", diff),
+            ("job_wait", json!({ "id": "job-1", "seconds": 120 })),
+        ],
+    );
+    let run = ok(&r[0]);
+    assert_eq!(run["job"], "job-1", "{run}");
+    assert!(
+        run["session"].as_str().is_some_and(|s| !s.is_empty()),
+        "{run}"
+    );
+    assert!(r[1].to_string().contains("done"), "{}", r[1]);
+    // The view's log reaches the agent from its first line.
+    let lines = r[1]["structuredContent"]["last_lines"].to_string();
+    assert!(lines.contains("Writing"), "{}", r[1]);
+    for table in ["effect", "delta", "contrast"] {
+        let f = format!("{out}.{table}.parquet");
+        assert!(Path::new(&f).exists(), "{f}");
+    }
+    let days = dir.path().join("results");
+    let script = std::fs::read_dir(&days)
+        .unwrap()
+        .map(|d| d.unwrap().path().join("runall.sh"))
+        .find(|p| p.exists())
+        .expect("runall.sh");
+    let text = std::fs::read_to_string(script).unwrap();
+    // The record runs straight through, as a script does, not in the view.
+    assert!(text.contains("cocoa diff --batch-process"), "{text}");
+    assert!(text.contains("fit.effect.parquet"), "{text}");
+    assert!(!text.contains("--job"), "{text}");
 }
 
 #[test]
@@ -388,4 +462,56 @@ fn serves_the_method_write_ups() {
     );
     assert!(ok(&r[0])["topics"].to_string().contains("identification"));
     assert!(r[1]["content"][0]["text"].as_str().unwrap().len() > 100);
+}
+
+#[test]
+fn a_simulation_lists_every_file_it_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let one = json!({ "n-genes": 20, "n-cells": 300, "n-causal-genes": 2,
+                      "n-samples-per-exposure": 3, "rseed": 1 });
+    let collider = json!({ "n-genes": 20, "n-cells": 300, "n-causal-genes": 2,
+                           "n-cell-types": 2, "n-exposure": 2 });
+    let mut one_more = one.clone();
+    one_more["indv-dispersion-trend"] = json!([0.5, -0.5]);
+    one_more["save-mtx"] = json!(true);
+    let mut collider_more = collider.clone();
+    collider_more["save-mtx"] = json!(true);
+    let runs = [
+        ("simulate-one", "one", one),
+        ("simulate-one", "one_more", one_more),
+        ("simulate-collider", "col", collider),
+        ("simulate-collider", "col_more", collider_more),
+    ];
+    let r = calls(
+        dir.path(),
+        &runs
+            .iter()
+            .map(|(command, out, flags)| {
+                let out = dir.path().join(out).to_string_lossy().into_owned();
+                (
+                    "cocoa_run",
+                    json!({ "command": command, "out": out, "flags": flags }),
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    for ((_, out, _), r) in runs.iter().zip(&r) {
+        let mut listed: Vec<String> = ok(r)["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o.as_str().unwrap().rsplit('/').next().unwrap().to_string())
+            .collect();
+        listed.sort();
+        let mut written: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|f| {
+                f.strip_prefix(out)
+                    .is_some_and(|rest| rest.starts_with('.'))
+            })
+            .collect();
+        written.sort();
+        assert_eq!(listed, written, "{out}");
+    }
 }

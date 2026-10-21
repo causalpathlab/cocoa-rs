@@ -7,6 +7,10 @@ use legume_numeric::matrix::traits::*;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::Arc;
 
+/// The word separators of cocoa's text inputs (individuals, exposures,
+/// topics).
+pub const DELIMS: &[char] = &['\t', ',', ' '];
+
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
 #[clap(rename_all = "lowercase")]
 pub enum TopicValue {
@@ -38,7 +42,7 @@ fn collect_topic_names_from_assignment(
     file_path: &str,
     topic_names: &mut HashSet<Box<str>>,
 ) -> anyhow::Result<()> {
-    let lines = read_lines_of_words_delim(file_path, &['\t', ',', ' '], -1)?.lines;
+    let lines = read_lines_of_words_delim(file_path, DELIMS, -1)?.lines;
 
     // Single pass: collect topics from both formats
     for line in lines {
@@ -124,8 +128,7 @@ fn read_topic_assignments(
 ) -> anyhow::Result<()> {
     info!("importing topic information from {}", file_path);
 
-    let ReadLinesOut { lines, header: _ } =
-        read_lines_of_words_delim(file_path, &['\t', ',', ' '], -1)?;
+    let ReadLinesOut { lines, header: _ } = read_lines_of_words_delim(file_path, DELIMS, -1)?;
 
     for (i, words) in lines.iter().enumerate() {
         if words.len() > 1 {
@@ -184,7 +187,7 @@ fn read_topic_proportions(
 fn process_exposure_assignments(
     file_path: &str,
 ) -> anyhow::Result<(HashMap<Box<str>, Box<str>>, HashMap<Box<str>, usize>)> {
-    let exposure = read_lines_of_words_delim(file_path, &['\t', ',', ' '], -1)?.lines;
+    let exposure = read_lines_of_words_delim(file_path, DELIMS, -1)?.lines;
 
     let indv_to_exposure: HashMap<Box<str>, Box<str>> = exposure
         .into_iter()
@@ -218,7 +221,7 @@ fn read_individual_assignments(
     let missing = MISSING.to_string().into_boxed_str();
 
     let this_indv = match indv_file {
-        Some(input_file) => read_lines_of_words_delim(input_file, &['\t', ',', ' '], -1)?.lines,
+        Some(input_file) => read_lines_of_words_delim(input_file, DELIMS, -1)?.lines,
         None => vec![vec![missing.clone()]; ndata],
     };
 

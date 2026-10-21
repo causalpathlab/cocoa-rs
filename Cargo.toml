@@ -1,6 +1,6 @@
 [package]
 name = "cocoa-rs"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -53,7 +53,16 @@ env_logger = "0.11"
 rustc-hash = "2.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-# The MCP server under `cocoa mcp`.
-legume-mcp = "0.4"
+# The MCP server under `cocoa mcp`, and following it from the views.
+legume-mcp = { version = "0.4", features = ["clap", "tui", "sessions"] }
+# The views of `cocoa simulate` and `cocoa diff`: detachable sessions, the
+# children they run, the flags' form, the file browser, and the heatmap and
+# its PDF.
+legume-tui = { version = "0.3", default-features = false, features = ["clap", "logs", "child", "form", "browse", "chart", "export", "save", "map-display"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+# The genome figure on screen: the terminal's image protocol, or blocks.
+ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 # Column types and row counts from a table's footer; the version legume-numeric uses.
 parquet = { version = "59", default-features = false }
+

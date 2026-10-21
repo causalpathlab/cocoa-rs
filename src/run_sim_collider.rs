@@ -7,6 +7,7 @@ use rustc_hash::FxHashMap as HashMap;
 use indicatif::ParallelProgressIterator;
 use legume_numeric::matrix::common_io::{mkdir_parent, write_lines, write_types};
 use legume_numeric::matrix::mtx_io;
+use legume_numeric::matrix::progress::new_progress_bar;
 use legume_numeric::matrix::traits::{IoOps, MatOps, SampleOps};
 use rand::SeedableRng;
 use rand_distr::{weighted::WeightedIndex, Distribution, Poisson, Uniform};
@@ -187,12 +188,26 @@ pub struct SimColliderArgs {
 impl SimColliderArgs {
     /// The files a run always writes: the counts and the files beside them.
     pub fn output_files(&self) -> anyhow::Result<Vec<String>> {
-        sim_output_files(
-            &self.output,
-            self.zip,
-            &self.backend,
-            &["samples.gz", "celltypes.gz", "exposures.gz", "causal.gz"],
-        )
+        let mut beside = vec![
+            "samples.gz",
+            "celltypes.gz",
+            "exposures.gz",
+            "causal.gz",
+            "conf_V.tsv.gz",
+            "conf_U.tsv.gz",
+            "propensity_X.tsv.gz",
+            "propensity_A.tsv.gz",
+            "planted_exposure.tsv.gz",
+            "planted_confounding.tsv.gz",
+            "planted_celltype_baseline.tsv.gz",
+        ];
+        if self.n_exposure >= 2 {
+            beside.push("planted_collider_shift.tsv.gz");
+        }
+        if self.save_mtx {
+            beside.extend(["mtx.gz", "rows.gz", "cols.gz"]);
+        }
+        sim_output_files(&self.output, self.zip, &self.backend, &beside)
     }
 }
 
@@ -392,7 +407,7 @@ impl ColliderSimulator {
 
         let results: Vec<_> = num_cells
             .into_par_iter()
-            .progress_count(n_indv as u64)
+            .progress_with(new_progress_bar(n_indv as u64).with_message("individuals"))
             .enumerate()
             .map(|(indv, nn)| {
                 let mut rng =
