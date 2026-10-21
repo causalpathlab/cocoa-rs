@@ -493,6 +493,18 @@ pub struct SimOneTypeArgs {
     output: Box<str>,
 }
 
+impl SimOneTypeArgs {
+    /// The files a run always writes: the counts and the files beside them.
+    pub fn output_files(&self) -> anyhow::Result<Vec<String>> {
+        sim_output_files(
+            &self.output,
+            self.zip,
+            &self.backend,
+            &["samples.gz", "exposures.gz", "causal.gz"],
+        )
+    }
+}
+
 pub fn run_sim_one_type_data(args: SimOneTypeArgs) -> anyhow::Result<()> {
     if args.gamma_hyperparam.len() != 2 {
         return Err(anyhow::anyhow!(
@@ -554,14 +566,14 @@ pub fn run_sim_one_type_data(args: SimOneTypeArgs) -> anyhow::Result<()> {
 
     let output = args.output.clone();
 
-    // Honor `--no-zip` (default = zip) → `.zarr.zip` target, matching the
-    // faba / data-beans-sim conventions. Then route through
-    // `resolve_backend_file` so the no-hdf5 fallback in data-beans rewrites
-    // an HDF5 request to Zarr instead of failing at the factory.
-    let effective_output = data_beans::zarr_io::apply_zip_flag(&output, args.zip, &args.backend);
-    let (backend, backend_file) =
-        data_beans::hdf5_io::resolve_backend_file(&effective_output, Some(args.backend.clone()))?;
-    let backend_file = backend_file.to_string();
+    // `--no-zip` honoured (`.zarr.zip` by default), then the no-hdf5
+    // fallback in data-beans rewrites an HDF5 request to Zarr.
+    let target = data_beans::zarr_io::output_target(&output, args.backend.clone(), args.zip)?;
+    let (backend, backend_file, effective_output) = (
+        target.backend,
+        target.working.to_string(),
+        target.effective.to_string(),
+    );
 
     let mtx_file = output.to_string() + ".mtx.gz";
     let row_file = output.to_string() + ".rows.gz";
