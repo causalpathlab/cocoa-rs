@@ -215,6 +215,18 @@ pub struct DiffArgs {
     pb_merge_levels: usize,
 }
 
+impl DiffArgs {
+    /// The tables a run always writes (`perm` with permutations).
+    pub fn output_files(&self) -> Vec<String> {
+        let perm = (self.n_permutations > 0).then_some("perm");
+        ["effect", "delta", "contrast", "stage1"]
+            .into_iter()
+            .chain(perm)
+            .map(|t| format!("{}.{t}.parquet", self.output))
+            .collect()
+    }
+}
+
 /// Number of principal components: `auto` or a count.
 #[derive(Clone, Copy, Debug)]
 pub enum PcCount {

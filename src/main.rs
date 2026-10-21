@@ -1,6 +1,7 @@
 mod collapse_cocoa_data;
 mod common;
 mod input;
+mod mcp;
 mod randomly_partition_data;
 mod run_collapse;
 mod run_diff;
@@ -28,10 +29,11 @@ use clap::{Parser, Subcommand};
                   The bias arises when cell type is a downstream effect of both exposure and an unmeasured confounder.\n\
                   \n\
                   Subcommands:\n  \
-                  \x20 collapse          — pseudobulk SC counts per (individual, topic)\n  \
-                  \x20 diff              — differential expression, confounder-adjusted\n  \
-                  \x20 simulate-one      — one cell type, with W → X → Y\n  \
-                  \x20 simulate-collider — many cell types, with an X → A ← U collider"
+                  \x20 collapse           pseudobulk SC counts per (individual, topic)\n  \
+                  \x20 diff               differential expression, confounder-adjusted\n  \
+                  \x20 simulate-one       one cell type, with W → X → Y\n  \
+                  \x20 simulate-collider  many cell types, with an X → A ← U collider\n  \
+                  \x20 mcp                serve these to an agent (Model Context Protocol)"
 )]
 struct Cli {
     #[arg(short = 'v', long, global = true, help = "Increase output verbosity")]
@@ -160,6 +162,15 @@ enum Commands {
                       Hartwig et al. (2023) Eur J Epidemiol — residual collider stratification"
     )]
     SimulateCollider(SimColliderArgs),
+
+    #[command(
+        about = "Serve cocoa's commands to an agent over the Model Context Protocol (stdio)",
+        long_about = "Serve cocoa's commands to an agent over the Model Context Protocol.\n\
+                      Speaks JSON-RPC on stdin/stdout; logs go to stderr.\n\
+                      Records of each run are kept in the working directory,\n\
+                      or in LEGUME_MCP_PROJECT when set (LEGUME_MCP_RECORDS=off keeps none)."
+    )]
+    Mcp,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -195,6 +206,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::SimulateCollider(args) => {
             run_sim_collider_data(args.clone())?;
+        }
+        Commands::Mcp => {
+            mcp::serve()?;
         }
     }
 

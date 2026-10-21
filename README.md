@@ -281,3 +281,33 @@ the planted parts of each log rate (`{out}.planted_exposure.tsv.gz`,
 `planted_collider_shift` and `planted_celltype_baseline`), so bias can be scored without
 estimating the truth. `make sim-calibration` in this directory checks the permutation null rate on
 a confounded null; it needs the release binary and R with the arrow package.
+
+## Agents (MCP)
+
+`cocoa mcp` serves cocoa's commands over the [Model Context Protocol](https://modelcontextprotocol.io)
+on stdin/stdout, so any MCP client can drive them, with any model behind it. The server keeps its
+records (a dated `results/` folder whose `runall.sh` repeats every run, a lab notebook, and an index
+of outputs) in its working directory, or in `LEGUME_MCP_PROJECT` when set; `LEGUME_MCP_RECORDS=off`
+keeps none.
+
+Claude Code:
+
+```sh
+claude mcp add cocoa -e LEGUME_MCP_PROJECT="$PWD" -- cocoa mcp
+```
+
+Most other clients take this shape:
+
+```json
+{ "mcpServers": { "cocoa": { "command": "cocoa", "args": ["mcp"],
+                             "env": { "LEGUME_MCP_PROJECT": "/path/to/project" } } } }
+```
+
+| Tool | Does |
+|---|---|
+| `cocoa_commands` | the commands, and with one, its flags (help, default, choices, required, switch) |
+| `cocoa_run` | runs a command as a child `cocoa`: data files in `data`, flags by long name; checked as cocoa parses it first, never over an existing run, into today's results folder unless `out` is given; `background` returns a job id at once |
+| `cocoa_read` | a run's tables; with `table`, its top rows sorted by a column (p-values ascending, others by magnitude), or the rows of `genes` |
+| `docs` | this README and the method write-ups under `docs/` |
+| `notebook` | (from legume-mcp) an entry in the day's lab notebook |
+| `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) follow or stop a background job |

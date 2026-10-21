@@ -184,6 +184,18 @@ pub struct SimColliderArgs {
     output: Box<str>,
 }
 
+impl SimColliderArgs {
+    /// The files a run always writes: the counts and the files beside them.
+    pub fn output_files(&self) -> anyhow::Result<Vec<String>> {
+        sim_output_files(
+            &self.output,
+            self.zip,
+            &self.backend,
+            &["samples.gz", "celltypes.gz", "exposures.gz", "causal.gz"],
+        )
+    }
+}
+
 struct ColliderSimulator {
     n_indv: usize,
     n_cells_per_indv: usize,
@@ -635,14 +647,14 @@ pub fn run_sim_collider_data(args: SimColliderArgs) -> anyhow::Result<()> {
     // Write output files
     let output = args.output.clone();
 
-    // Honor `--no-zip` (default = zip) → `.zarr.zip` target, matching the
-    // faba / data-beans-sim conventions. Then route through
-    // `resolve_backend_file` so the no-hdf5 fallback in data-beans rewrites
-    // an HDF5 request to Zarr instead of failing at the factory.
-    let effective_output = data_beans::zarr_io::apply_zip_flag(&output, args.zip, &args.backend);
-    let (backend, backend_file) =
-        data_beans::hdf5_io::resolve_backend_file(&effective_output, Some(args.backend.clone()))?;
-    let backend_file = backend_file.to_string();
+    // `--no-zip` honoured (`.zarr.zip` by default), then the no-hdf5
+    // fallback in data-beans rewrites an HDF5 request to Zarr.
+    let target = data_beans::zarr_io::output_target(&output, args.backend.clone(), args.zip)?;
+    let (backend, backend_file, effective_output) = (
+        target.backend,
+        target.working.to_string(),
+        target.effective.to_string(),
+    );
 
     // Cell -> individual mapping
     let sample_file = output.to_string() + ".samples.gz";

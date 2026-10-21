@@ -111,6 +111,18 @@ pub struct CollapseArgs {
     block_size: usize,
 }
 
+impl CollapseArgs {
+    /// The files a run always writes; the per-topic tables are named by the
+    /// topics in the data.
+    pub fn output_files(&self) -> Vec<String> {
+        if self.no_adjust_housekeeping {
+            vec![]
+        } else {
+            vec![format!("{}.gene_weights.tsv.gz", self.output)]
+        }
+    }
+}
+
 pub fn run_collapse(args: CollapseArgs) -> anyhow::Result<()> {
     mkdir_parent(&args.output)?;
 
