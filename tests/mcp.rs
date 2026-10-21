@@ -11,6 +11,11 @@ use std::process::{Command, Stdio};
 
 /// Each call's result, in order, from one server session in `project`.
 fn calls(project: &Path, calls: &[(&str, Value)]) -> Vec<Value> {
+    calls_from(project, project, calls)
+}
+
+/// [`calls`] from a server started in `cwd` with `project` as given.
+fn calls_from(cwd: &Path, project: &Path, calls: &[(&str, Value)]) -> Vec<Value> {
     let mut input = String::new();
     for (i, (name, args)) in calls.iter().enumerate() {
         let m = json!({ "jsonrpc": "2.0", "id": i, "method": "tools/call",
@@ -19,7 +24,7 @@ fn calls(project: &Path, calls: &[(&str, Value)]) -> Vec<Value> {
     }
     let mut child = Command::new(env!("CARGO_BIN_EXE_cocoa"))
         .arg("mcp")
-        .current_dir(project)
+        .current_dir(cwd)
         .env("LEGUME_MCP_PROJECT", project)
         .env("LEGUME_MCP_WATCH", "off")
         .stdin(Stdio::piped())
@@ -260,6 +265,71 @@ fn default_output_goes_to_the_days_results() {
 }
 
 #[test]
+fn names_stay_text_when_they_read_as_numbers() {
+    // the simulator names genes and individuals by number
+    let dir = tempfile::tempdir().unwrap();
+    let sim = dir.path().join("sim").to_string_lossy().into_owned();
+    let fit = dir.path().join("fit").to_string_lossy().into_owned();
+    let simulate = json!({
+        "command": "simulate-one", "out": sim,
+        "flags": { "n-genes": 20, "n-cells": 300, "n-causal-genes": 2,
+                   "n-samples-per-exposure": 3, "rseed": 1 },
+    });
+    let r = calls(dir.path(), &[("cocoa_run", simulate)]);
+    ok(&r[0]);
+    let n_cells = common::read_gz(&format!("{sim}.samples.gz"))
+        .lines()
+        .count();
+    let topics = format!("{sim}.topic.txt");
+    std::fs::write(&topics, "0\n".repeat(n_cells)).unwrap();
+    let diff = json!({
+        "command": "diff", "data": [format!("{sim}.zarr.zip")], "out": fit,
+        "flags": { "indv-files": [format!("{sim}.samples.gz")],
+                   "exposure-assignment-file": format!("{sim}.exposures.gz"),
+                   "topic-assignment-files": [topics] },
+    });
+    let r = calls(
+        dir.path(),
+        &[
+            ("cocoa_run", diff),
+            (
+                "cocoa_read",
+                json!({ "prefix": fit, "table": "contrast", "top": 100 }),
+            ),
+            (
+                "cocoa_read",
+                json!({ "prefix": fit, "table": "contrast", "genes": ["3", 4.0] }),
+            ),
+            (
+                "cocoa_read",
+                json!({ "prefix": fit, "table": "delta", "top": 1 }),
+            ),
+            ("cocoa_read", json!({ "prefix": fit })),
+        ],
+    );
+    ok(&r[0]);
+    let all = ok(&r[1])["rows"].as_array().unwrap().clone();
+    assert!(all.iter().all(|r| r["gene"].is_string()), "{all:?}");
+    let picked: Vec<&str> = ok(&r[2])["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["gene"].as_str().unwrap())
+        .collect();
+    assert_eq!(picked.len(), 2, "{picked:?}");
+    let delta = &ok(&r[3])["rows"][0];
+    let names = delta
+        .as_object()
+        .unwrap()
+        .values()
+        .filter(|v| v.is_string());
+    assert!(names.count() >= 2, "gene and individual are names: {delta}");
+    let listed = ok(&r[4])["tables"].as_array().unwrap().clone();
+    let contrast = listed.iter().find(|t| t["table"] == "contrast").unwrap();
+    assert_eq!(contrast["n_rows"], 20);
+}
+
+#[test]
 fn refuses_unknown_arguments_and_output_as_a_flag() {
     let dir = tempfile::tempdir().unwrap();
     let fx = fixture();
@@ -272,6 +342,38 @@ fn refuses_unknown_arguments_and_output_as_a_flag() {
     let r = calls(dir.path(), &[("cocoa_run", typo), ("cocoa_run", short)]);
     assert!(error_text(&r[0]).contains("backgound"));
     assert!(error_text(&r[1]).contains("out"));
+}
+
+#[test]
+fn a_relative_project_is_read_from_where_the_server_starts() {
+    let parent = tempfile::tempdir().unwrap();
+    std::fs::create_dir(parent.path().join("proj")).unwrap();
+    let args = json!({
+        "command": "simulate-one",
+        "flags": { "n-genes": 20, "n-cells": 100, "n-causal-genes": 2,
+                   "n-samples-per-exposure": 2 },
+    });
+    let r = calls_from(parent.path(), Path::new("proj"), &[("cocoa_run", args)]);
+    let out = ok(&r[0])["out"].as_str().unwrap().to_string();
+    let results = std::fs::canonicalize(parent.path().join("proj/results")).unwrap();
+    let out = std::fs::canonicalize(Path::new(&out).parent().unwrap()).unwrap();
+    assert!(
+        out.starts_with(&results),
+        "{} not under {}",
+        out.display(),
+        results.display()
+    );
+    assert!(!parent.path().join("proj/proj").exists());
+}
+
+#[test]
+fn data_given_as_a_flag_is_pointed_to_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let fx = fixture();
+    let mut args = diff_args(&fx, &dir.path().join("d").to_string_lossy());
+    args["flags"]["data_files"] = json!([fx.data()]);
+    let r = calls(dir.path(), &[("cocoa_run", args)]);
+    assert!(error_text(&r[0]).contains("`data`"), "{}", r[0]);
 }
 
 #[test]
