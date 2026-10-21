@@ -12,14 +12,17 @@
 //! 2009, doi:10.1371/journal.pcbi.1000424): every run goes into the day's
 //! `runall.sh`, so the work can be redone without the agent.
 
+use crate::runs::{cocoa_cli, plan, subcommand, tables, taken, BATCH, COMMANDS};
 use anyhow::Context;
-use clap::CommandFactory;
-use legume_mcp::{Call, Content, Handler, ServerInfo, ToolSpec};
+use legume_mcp::{cli, parse_args, shown_path, Call, Content, Handler, ServerInfo, ToolSpec};
 use legume_numeric::matrix::table::TableReader;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+/// The name `cocoa mcp` serves under, and that its followers find it by.
+pub const SERVER: &str = "cocoa";
 
 const INSTRUCTIONS: &str = "\
 cocoa estimates exposure effects on single-cell gene expression across \
@@ -29,16 +32,15 @@ simulate-one, simulate-collider) and, with one, its flags. `cocoa_run` runs \
 one: data files go in `data`, flags by their long name in `flags`; the \
 command line is checked as cocoa parses it before anything runs, and an \
 existing run is never written over. A diff on a large data set takes a while: \
-set `background` and follow the job with `job_status` / `job_wait`. \
+set `background` and follow the job with `job_status` / `job_wait`; a \
+background diff runs on cocoa's own diff view in a session the user can \
+attach to (`cocoa attach`), and it goes on if this server ends. \
 `cocoa_read` lists a run's tables (effect, delta, contrast, stage1, perm, \
 ...) and, with a table, returns its top rows sorted by a column (p-values \
 ascending, other columns by absolute value), or the rows of given genes. \
 `docs` prints the method write-ups: what the estimator identifies and \
 assumes. Relative paths are read from the project folder; results \
 give the paths written.";
-
-/// The commands an agent may run, in the order `cocoa --help` lists them.
-const COMMANDS: &[&str] = &["diff", "collapse", "simulate-one", "simulate-collider"];
 
 /// The method write-ups: topic, text.
 const DOCS: &[(&str, &str)] = &[
@@ -54,27 +56,12 @@ const DOCS: &[(&str, &str)] = &[
 const TOP: usize = 20;
 
 pub fn serve() -> anyhow::Result<()> {
-    use legume_mcp::project::{OFF_ENV, ROOT_ENV};
-    // The project's folder, absolute, given to the server as it is: the
-    // paths an agent gives are read from it, as the records are kept in it.
-    let root = std::env::var_os(ROOT_ENV).filter(|r| !r.is_empty());
-    let root = match root {
-        Some(root) => std::path::absolute(&root)?,
-        None => std::env::current_dir()?,
-    };
-    std::env::set_current_dir(&root).with_context(|| format!("project {}", root.display()))?;
-    let records_off = std::env::var(OFF_ENV).is_ok_and(|v| v.eq_ignore_ascii_case("off"));
-    let options = legume_mcp::Options {
-        project: (!records_off).then_some(root),
-        watch: legume_mcp::watch::base(),
-    };
     let info = ServerInfo {
-        name: "cocoa".into(),
+        name: SERVER.into(),
         version: env!("CARGO_PKG_VERSION").into(),
         instructions: Some(INSTRUCTIONS.into()),
     };
-    let stdin = std::io::BufReader::new(std::io::stdin());
-    legume_mcp::serve_with(stdin, std::io::stdout(), info, options, Cocoa)
+    legume_mcp::serve_in_project(info, Cocoa)
 }
 
 struct Cocoa;
@@ -86,17 +73,13 @@ impl Handler for Cocoa {
 
     fn call(&mut self, name: &str, args: Value, cx: &Call) -> anyhow::Result<Vec<Content>> {
         match name {
-            "cocoa_commands" => commands(parse(args)?),
-            "cocoa_run" => run(parse(args)?, cx),
-            "cocoa_read" => read(parse(args)?),
-            "docs" => docs(parse(args)?),
+            "cocoa_commands" => commands(parse_args(args)?),
+            "cocoa_run" => run(parse_args(args)?, cx),
+            "cocoa_read" => read(parse_args(args)?, cx),
+            "docs" => docs(parse_args(args)?),
             _ => unreachable!("the server answers unknown tools itself"),
         }
     }
-}
-
-fn parse<T: serde::de::DeserializeOwned>(args: Value) -> anyhow::Result<T> {
-    serde_json::from_value(args).map_err(|e| anyhow::anyhow!("arguments: {e}"))
 }
 
 fn schema(properties: Value, required: &[&str]) -> Value {
@@ -120,7 +103,7 @@ fn tools() -> Vec<ToolSpec> {
                     "data": { "type": "array", "items": { "type": "string" }, "description": "Single-cell data files (.zarr / .h5), for diff and collapse" },
                     "flags": { "type": "object", "description": "Flags by long name (without --): a value, a list (joined as the flag takes it), or true/false for a switch. cocoa_commands lists them" },
                     "out": { "type": "string", "description": "Output prefix; the next free {command} in today's results folder when omitted" },
-                    "background": { "type": "boolean", "description": "Run as a background job: the call returns its id at once; follow it with job_wait or job_status, and read the tables only once it is done" },
+                    "background": { "type": "boolean", "description": "Run as a background job: the call returns its id at once (a diff's, with the session that shows it); follow it with job_wait or job_status, and read the tables only once it is done" },
                 }),
                 &["command"],
             ),
@@ -151,42 +134,11 @@ fn tools() -> Vec<ToolSpec> {
     ]
 }
 
-/// cocoa's command line, built, so each command carries the global flags.
-fn cli() -> clap::Command {
-    let mut cli = crate::Cli::command();
-    cli.build();
-    cli
-}
-
-/// Command `name` of the built command line `cli`.
-fn subcommand<'a>(cli: &'a clap::Command, name: &str) -> anyhow::Result<&'a clap::Command> {
-    anyhow::ensure!(
-        COMMANDS.contains(&name),
-        "command {name:?}: one of {}",
-        COMMANDS.join(", ")
-    );
-    Ok(cli
-        .find_subcommand(name)
-        .expect("every command is a subcommand"))
-}
-
-/// The flags an agent sets: all but help.
-fn flags(sub: &clap::Command) -> impl Iterator<Item = &clap::Arg> {
-    sub.get_arguments().filter(|a| a.get_id() != "help")
-}
-
-/// A flag as the command line spells it: `--long`, else `-s`; a
-/// positional by its name.
-fn flag_name(arg: &clap::Arg) -> String {
-    match (arg.get_long(), arg.get_short()) {
-        (Some(long), _) => format!("--{long}"),
-        (None, Some(short)) => format!("-{short}"),
-        (None, None) => arg.get_id().as_str().replace('_', "-"),
-    }
-}
-
-fn is_switch(arg: &clap::Arg) -> bool {
-    !arg.get_action().takes_values()
+/// The flags of `sub` an agent sets: its own, not the view's
+/// (`--batch-process`, `--watch`, the session's), which its runs never
+/// open.
+fn agent_flags(sub: &clap::Command) -> impl Iterator<Item = &clap::Arg> {
+    cli::settable(sub).filter(|a| !crate::tui::VIEW_IDS.contains(&a.get_id().as_str()))
 }
 
 #[derive(Deserialize)]
@@ -196,52 +148,17 @@ struct CommandsArgs {
 }
 
 fn commands(a: CommandsArgs) -> anyhow::Result<Vec<Content>> {
-    let cli = cli();
+    let app = cocoa_cli();
     let about = |sub: &clap::Command| sub.get_about().map(|s| s.to_string());
     let Some(name) = a.command else {
         let commands = COMMANDS
             .iter()
-            .map(|&c| Ok(json!({ "command": c, "about": about(subcommand(&cli, c)?) })))
+            .map(|&c| Ok(json!({ "command": c, "about": about(subcommand(&app, c)?) })))
             .collect::<anyhow::Result<Vec<_>>>()?;
         return Ok(vec![Content::Json(json!({ "commands": commands }))]);
     };
-    let sub = subcommand(&cli, &name)?;
-    let flags: Vec<Value> = flags(sub)
-        .map(|arg| {
-            let mut flag = json!({
-                "flag": flag_name(arg),
-                "help": arg.get_help().map(|h| h.to_string()),
-            });
-            if is_switch(arg) {
-                flag["switch"] = true.into();
-            } else {
-                let defaults: Vec<String> = arg
-                    .get_default_values()
-                    .iter()
-                    .map(|v| v.to_string_lossy().into_owned())
-                    .collect();
-                if !defaults.is_empty() {
-                    flag["default"] = defaults.join(",").into();
-                }
-                let choices: Vec<String> = arg
-                    .get_possible_values()
-                    .iter()
-                    .filter(|v| !v.is_hide_set())
-                    .map(|v| v.get_name().to_string())
-                    .collect();
-                if !choices.is_empty() {
-                    flag["choices"] = choices.into();
-                }
-            }
-            if arg.is_positional() {
-                flag["positional"] = true.into();
-            }
-            if arg.is_required_set() {
-                flag["required"] = true.into();
-            }
-            flag
-        })
-        .collect();
+    let sub = subcommand(&app, &name)?;
+    let flags: Vec<Value> = agent_flags(sub).map(cli::describe).collect();
     Ok(vec![Content::Json(
         json!({ "command": name, "about": about(sub), "flags": flags }),
     )])
@@ -260,18 +177,14 @@ struct RunArgs {
     background: bool,
 }
 
-/// A flag's value as it goes on the command line.
-fn text(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        v => v.to_string(),
-    }
-}
-
 /// The command line for `command` from the agent's data files and flags,
-/// without `--output`: each flag as one `--flag=value` word, so a value
-/// starting with `-` stays a value.
+/// without `--output`; a diff runs straight through, as its script will.
 fn command_line(sub: &clap::Command, a: &RunArgs) -> anyhow::Result<Vec<String>> {
+    if let Some(view) = a.flags.keys().find(|k| {
+        crate::tui::VIEW_IDS.contains(&k.trim_start_matches('-').replace('-', "_").as_str())
+    }) {
+        anyhow::bail!("{view} is the view's, not a flag a run takes");
+    }
     let mut argv = vec![a.command.clone()];
     if !a.data.is_empty() {
         anyhow::ensure!(
@@ -281,80 +194,32 @@ fn command_line(sub: &clap::Command, a: &RunArgs) -> anyhow::Result<Vec<String>>
         );
         argv.extend(a.data.iter().cloned());
     }
-    for (key, value) in &a.flags {
-        let key = key.trim_start_matches('-');
-        let arg = flags(sub)
-            .find(|f| {
-                f.get_long() == Some(key)
-                    || f.get_id().as_str() == key.replace('-', "_")
-                    || f.get_short().is_some_and(|s| key == s.to_string())
-            })
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "{} has no flag --{key}: cocoa_commands lists them",
-                    a.command
-                )
-            })?;
-        anyhow::ensure!(
-            !arg.is_positional(),
-            "give the data files in `data`, not as a flag"
-        );
-        anyhow::ensure!(
-            arg.get_id() != "output",
-            "give the output prefix as out, not as a flag"
-        );
-        let flag = flag_name(arg);
-        if is_switch(arg) {
-            match value {
-                Value::Bool(true) => argv.push(flag),
-                Value::Bool(false) | Value::Null => {}
-                v => anyhow::bail!("{flag} is a switch: true or false, not {v}"),
-            }
-            continue;
-        }
-        let values: Vec<String> = match value {
-            Value::Null => continue,
-            Value::Array(vs) => vs.iter().map(text).collect(),
-            v => vec![text(v)],
-        };
-        if let Some(delim) = arg.get_value_delimiter() {
-            argv.push(format!("{flag}={}", values.join(&delim.to_string())));
-        } else {
-            argv.extend(values.iter().map(|v| format!("{flag}={v}")));
-        }
-    }
+    let own = [("output", "out"), ("data_files", "data")];
+    argv.extend(cli::to_argv(sub, &a.flags, &own, "cocoa_commands")?);
     Ok(argv)
 }
 
-/// The files a run of `argv` with output prefix `out` writes, as the
-/// command lists them, once cocoa's parser has accepted the command line.
-fn plan(cli: &clap::Command, argv: &[String], out: &str) -> anyhow::Result<Vec<PathBuf>> {
-    use crate::{run_collapse::*, run_diff::*, run_sim_collider::*, run_sim_one_type::*};
-    use clap::FromArgMatches;
-    let words = std::iter::once("cocoa".to_string())
-        .chain(argv.iter().cloned())
-        .chain([format!("--output={out}")]);
-    let matches = cli
-        .clone()
-        .try_get_matches_from(words)
-        .map_err(|e| anyhow::anyhow!("{}", e.render()))?;
-    let (command, m) = matches.subcommand().expect("the command was parsed");
-    let files = match command {
-        "diff" => DiffArgs::from_arg_matches(m)?.output_files(),
-        "collapse" => CollapseArgs::from_arg_matches(m)?.output_files(),
-        "simulate-one" => SimOneTypeArgs::from_arg_matches(m)?.output_files()?,
-        "simulate-collider" => SimColliderArgs::from_arg_matches(m)?.output_files()?,
-        _ => unreachable!("one of COMMANDS"),
-    };
-    Ok(files.into_iter().map(PathBuf::from).collect())
+/// The run the agent works on, published for the views that follow it
+/// (`cocoa diff --watch`): the command, its output prefix and what it
+/// writes, absolute, so a view reads it once it is all there.
+fn publish(cx: &Call, command: &str, out: &str, outputs: &[PathBuf]) {
+    let outputs: Vec<String> = outputs.iter().map(|o| absolute(o)).collect();
+    cx.state(&json!({ "command": command, "out": absolute(Path::new(out)), "outputs": outputs }));
+}
+
+/// `p` whole, from the project folder the server works in.
+fn absolute(p: &Path) -> String {
+    legume_tui::browse::normalize(p)
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn run(a: RunArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
-    let cli = cli();
-    let argv = command_line(subcommand(&cli, &a.command)?, &a)?;
+    let app = cocoa_cli();
+    let argv = command_line(subcommand(&app, &a.command)?, &a)?;
     let (out, outputs) = match &a.out {
         Some(out) => {
-            let outputs = plan(&cli, &argv, out)?;
+            let outputs = plan(&app, &argv, out)?;
             if let Some(found) = taken(Path::new(out), &outputs) {
                 anyhow::bail!(
                     "{} exists: cocoa_run never writes over a run; choose another out",
@@ -363,65 +228,55 @@ fn run(a: RunArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
             }
             (out.clone(), outputs)
         }
-        None => free_prefix(&cli, &a.command, &argv, cx)?,
+        None => cx.free_prefix(
+            &a.command,
+            |out| plan(&app, &argv, out),
+            |out| !tables(out).is_empty(),
+        )?,
     };
 
-    let mut cmd = legume_mcp::own_command(argv.iter().chain([&format!("--output={out}")]))?;
-    cmd.env("RUST_LOG", "info");
+    // cocoa run on `argv` to `out`, `mode` after the command's name: a diff
+    // runs straight through (BATCH) or on its view (--job).
+    let cocoa = |mode: Option<&str>| -> anyhow::Result<std::process::Command> {
+        let (name, rest) = argv.split_first().expect("a command's name");
+        let output = format!("--output={out}");
+        let words = std::iter::once(name.as_str())
+            .chain(mode)
+            .chain(rest.iter().map(String::as_str))
+            .chain([output.as_str()]);
+        let mut cmd = legume_mcp::own_command(words)?;
+        cmd.env("RUST_LOG", "info");
+        Ok(cmd)
+    };
+    let is_diff = a.command == "diff";
+    let cmd = cocoa(is_diff.then_some(BATCH))?;
     let summary = format!("cocoa {} to {out}", a.command);
     let shown: Vec<String> = outputs.iter().map(|p| shown_path(p)).collect();
     let mut result =
         json!({ "command": a.command, "out": shown_path(Path::new(&out)), "outputs": shown });
-    if a.background {
+    publish(cx, &a.command, &out, &outputs);
+    if a.background && is_diff {
+        // In a session of its own, on the diff view: `cocoa attach` shows it,
+        // and it outlives this server.
+        let started = cx.start_session_job(legume_mcp::SessionJob {
+            tool: crate::tui::TOOL,
+            screen: a.command.clone(),
+            label: Path::new(&out)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned()),
+            watch: cocoa(Some("--job"))?,
+            record: cmd,
+            outputs: outputs.clone(),
+            summary,
+        })?;
+        result["job"] = started.job.into();
+        result["session"] = started.session.into();
+    } else if a.background {
         result["job"] = cx.spawn_job(cmd, &outputs, &summary)?.into();
     } else {
         cx.run_making(cmd, &outputs, &summary)?;
     }
     Ok(vec![Content::Json(result)])
-}
-
-/// A file of a run at `prefix`, when there is one: one of its `outputs`,
-/// or a table of it (a collapse writes one per topic).
-fn taken(prefix: &Path, outputs: &[PathBuf]) -> Option<PathBuf> {
-    outputs.iter().find(|p| p.exists()).cloned().or_else(|| {
-        tables(&prefix.to_string_lossy())
-            .into_iter()
-            .next()
-            .map(|(_, f)| f)
-    })
-}
-
-/// The next free `{command}`, `{command}-2`, ... in today's results folder,
-/// and what a run there writes: no file of it there, and none held by a job.
-fn free_prefix(
-    cli: &clap::Command,
-    command: &str,
-    argv: &[String],
-    cx: &Call,
-) -> anyhow::Result<(String, Vec<PathBuf>)> {
-    let dir = cx
-        .results_dir()
-        .context("the server keeps no records here: give out")?;
-    for k in 1.. {
-        let p = match k {
-            1 => dir.join(command),
-            k => dir.join(format!("{command}-{k}")),
-        };
-        let out = p.to_string_lossy().into_owned();
-        let outputs = plan(cli, argv, &out)?;
-        if taken(&p, &outputs).is_none() && cx.ensure_free(&outputs).is_ok() {
-            return Ok((out, outputs));
-        }
-    }
-    unreachable!("an unbounded search ends in a free name")
-}
-
-/// `p` as results give paths: from the root.
-fn shown_path(p: &Path) -> String {
-    std::path::absolute(p)
-        .unwrap_or_else(|_| p.to_path_buf())
-        .to_string_lossy()
-        .into_owned()
 }
 
 #[derive(Deserialize, Clone, Copy)]
@@ -441,31 +296,6 @@ struct ReadArgs {
     order: Option<Order>,
     top: Option<usize>,
     genes: Option<Vec<Value>>,
-}
-
-/// The run's tables under `prefix`: name and file, by name. A name with a
-/// dot in it is another run's (`{prefix}.v2.effect`), not this one's.
-fn tables(prefix: &str) -> Vec<(String, PathBuf)> {
-    let prefix = Path::new(prefix);
-    let Some(base) = prefix.file_name().map(|b| b.to_string_lossy() + ".") else {
-        return vec![];
-    };
-    let parent = match prefix.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-    let mut found: Vec<(String, PathBuf)> = std::fs::read_dir(parent)
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            let table = name.strip_prefix(base.as_ref())?.strip_suffix(".parquet")?;
-            (!table.contains('.')).then(|| (table.to_string(), e.path()))
-        })
-        .collect();
-    found.sort();
-    found
 }
 
 /// A parquet table's footer: its columns, which of them are text (names,
@@ -532,6 +362,7 @@ fn is_probability(column: &str) -> bool {
 
 /// The run's tables under `prefix`, each with its columns and rows.
 fn list_tables(prefix: &str, found: &[(String, PathBuf)]) -> anyhow::Result<Vec<Content>> {
+    let out = absolute(Path::new(prefix));
     let listed = found
         .iter()
         .map(|(t, f)| {
@@ -540,11 +371,11 @@ fn list_tables(prefix: &str, found: &[(String, PathBuf)]) -> anyhow::Result<Vec<
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(vec![Content::Json(
-        json!({ "prefix": prefix, "tables": listed }),
+        json!({ "prefix": prefix, "out": out, "tables": listed }),
     )])
 }
 
-fn read(a: ReadArgs) -> anyhow::Result<Vec<Content>> {
+fn read(a: ReadArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
     let ReadArgs {
         prefix,
         table,
@@ -558,22 +389,35 @@ fn read(a: ReadArgs) -> anyhow::Result<Vec<Content>> {
         .map(gene_names)
         .transpose()?
         .map(|g| g.into_iter().collect());
-    let file = if prefix.ends_with(".parquet") && Path::new(&prefix).is_file() {
-        PathBuf::from(&prefix)
+    // The run read, whole (a table given as a file: its prefix).
+    let (file, out) = if prefix.ends_with(".parquet") && Path::new(&prefix).is_file() {
+        let file = PathBuf::from(&prefix);
+        // `fit.contrast.parquet` is of run `fit`: by the file's name alone.
+        let name = file.file_name().map(|n| n.to_string_lossy().into_owned());
+        let name = name
+            .as_deref()
+            .unwrap_or_default()
+            .trim_end_matches(".parquet");
+        let run = file.with_file_name(name.rsplit_once('.').map_or(name, |(run, _)| run));
+        let run = run.to_string_lossy().into_owned();
+        publish(cx, "read", &run, &[]);
+        (file, absolute(Path::new(&run)))
     } else {
         let found = tables(&prefix);
         anyhow::ensure!(!found.is_empty(), "no cocoa tables under {prefix}");
+        publish(cx, "read", &prefix, &[]);
         let Some(table) = &table else {
             return list_tables(&prefix, &found);
         };
-        found
+        let file = found
             .iter()
             .find(|(t, _)| t == table)
             .map(|(_, f)| f.clone())
             .ok_or_else(|| {
                 let names: Vec<&str> = found.iter().map(|(t, _)| t.as_str()).collect();
                 anyhow::anyhow!("no table {table:?}: {prefix} has {}", names.join(", "))
-            })?
+            })?;
+        (file, absolute(Path::new(&prefix)))
     };
 
     let reader = TableReader::open(&file.to_string_lossy())?;
@@ -641,6 +485,7 @@ fn read(a: ReadArgs) -> anyhow::Result<Vec<Content>> {
         })
         .collect();
     Ok(vec![Content::Json(json!({
+        "out": out,
         "file": shown_path(&file),
         "table": table,
         "columns": header,

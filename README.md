@@ -189,7 +189,7 @@ confounding.
 | Estimand | Shape | File |
 |----------|-------|------|
 | τ per exposure level and log effect per non-reference level | gene × topic | `*.effect.parquet` |
-| δ, individual effect independent of exposure (mean 1) | gene × individual × topic | `*.delta.parquet` |
+| δ, individual effect independent of exposure (mean 1), with the individual's `count` and the stage-1 `expected` count at its cell states | gene × individual × topic | `*.delta.parquet` |
 | `contrast` = log effect averaged over topics (`contrast_<level>` per level with more than two levels), `log_mean` = log mean count per cell; with confounders also `contrast_unadjusted`; with control genes `control` | gene | `*.contrast.parquet` |
 | propensity P(X ∣ V) per individual (with confounders) | individual × group | `*.propensity.parquet` |
 | pseudobulks kept and dropped, cells kept and dropped, median individuals per kept pseudobulk | topic | `*.stage1.parquet` |
@@ -306,7 +306,7 @@ Most other clients take this shape:
 | Tool | Does |
 |---|---|
 | `cocoa_commands` | the commands, and with one, its flags (help, default, choices, required, switch) |
-| `cocoa_run` | runs a command as a child `cocoa`: data files in `data`, flags by long name; checked as cocoa parses it first, never over an existing run, into today's results folder unless `out` is given; `background` returns a job id at once |
+| `cocoa_run` | runs a command as a child `cocoa`: data files in `data`, flags by long name; checked as cocoa parses it first, never over an existing run, into today's results folder unless `out` is given; `background` returns a job id at once; a background diff runs on the diff view in a session of its own, which `cocoa attach` shows and which outlives the server |
 | `cocoa_read` | a run's tables; with `table`, its top rows sorted by a column (p-values ascending, others by magnitude), or the rows of `genes` |
 | `docs` | this README and the method write-ups under `docs/` |
 | `notebook` | (from legume-mcp) an entry in the day's lab notebook |
