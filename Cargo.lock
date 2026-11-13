@@ -722,7 +722,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cocoa-rs"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "approx",
@@ -956,7 +956,7 @@ dependencies = [
  "document-features",
  "mio",
  "parking_lot",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "signal-hook",
  "signal-hook-mio",
  "winapi",
@@ -1196,9 +1196,9 @@ dependencies = [
 
 [[package]]
 name = "data-beans"
-version = "0.10.2"
+version = "0.11.121"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6556f7fc1bcf2c0d372d141723e4f78962006f013a832a60713d44588579d83d"
+checksum = "b34d32a9c4a68d7703274587864a218b89de8b5380485a52f4acde036c80ca16"
 dependencies = [
  "anyhow",
  "approx",
@@ -1230,6 +1230,7 @@ dependencies = [
  "statrs",
  "sysinfo",
  "tempfile",
+ "xattr",
  "zarrs",
  "zarrs_zip",
  "zip 9.0.5",
@@ -2693,7 +2694,7 @@ dependencies = [
  "ratatui",
  "ratatui-image",
  "rayon",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "serde",
  "serde_json",
  "signal-hook",
@@ -4362,9 +4363,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.5"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags 2.13.2",
  "errno",
@@ -4859,7 +4860,7 @@ dependencies = [
  "fastrand",
  "getrandom 0.4.3",
  "once_cell",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "windows-sys 0.61.2",
 ]
 
@@ -4871,7 +4872,7 @@ checksum = "9048a889effe34a5cddee0af7f53285198b16dca3be510858d38dfdb3e62a04e"
 dependencies = [
  "bitflags 2.13.2",
  "parking_lot",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "signal-hook",
  "windows-sys 0.61.2",
 ]
@@ -5458,7 +5459,7 @@ checksum = "24d643ce3fd3e5b54854602a080f34fb10ab75e0b813ee32d00ca2b44fa74762"
 dependencies = [
  "either",
  "env_home",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "winsafe",
 ]
 
@@ -5817,6 +5818,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
+]
+
+[[package]]
+name = "xattr"
+version = "1.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "963d6fab92d5504b971dc8bd90ca743c2575e590bc8071ea5bc571598667ae08"
+dependencies = [
+ "libc",
+ "rustix 1.1.6",
 ]
 
 [[package]]
