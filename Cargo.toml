@@ -1,6 +1,6 @@
 [package]
 name = "cocoa-rs"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -31,7 +31,7 @@ metal = [
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.10", default-features = false, features = ["aux", "alg", "sim"] }
+data-beans = { version = "0.11", default-features = false, features = ["aux", "alg", "sim"] }
 legume-numeric = { version = "0.9", default-features = false, features = ["matrix", "param"] }
 
 anyhow = "1.0"
